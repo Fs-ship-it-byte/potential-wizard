@@ -13,8 +13,16 @@ const TMDB_BASE = 'https://api.themoviedb.org/3';
 // para armar las URLs del proxy de HLS que le entregamos al reproductor.
 // En Railway, seteá esta variable con la URL que te da el proyecto, ej:
 // https://tuapp.up.railway.app
-const PUBLIC_URL = (process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`).replace(/\/+$/, '');
+// Si NO la seteás, se auto-detecta con el host/protocolo de cada request
+// (funciona en la mayoría de los casos, pero PUBLIC_URL explícita es más segura).
+let PUBLIC_URL = (process.env.PUBLIC_URL || `http://127.0.0.1:${PORT}`).replace(/\/+$/, '');
+const PUBLIC_URL_EXPLICIT = !!process.env.PUBLIC_URL;
 aggregator.setPublicUrl(PUBLIC_URL);
+if (!PUBLIC_URL_EXPLICIT) {
+  console.warn('[AVISO] No seteaste PUBLIC_URL. Voy a intentar auto-detectarla por request, ' +
+    'pero es más confiable que la definas vos mismo en las variables de entorno de Railway ' +
+    '(ej: https://tuapp.up.railway.app), sin "/" al final.');
+}
 
 // cache corta para no golpear TMDB en cada scroll/click del usuario
 const cache = new NodeCache({ stdTTL: 600, checkperiod: 120 });
@@ -190,6 +198,20 @@ builder.defineStreamHandler(async ({ type, id }) => {
 });
 
 const app = express();
+app.set('trust proxy', true); // Railway está detrás de un proxy; sin esto req.protocol/host quedan mal
+
+// Auto-detección de PUBLIC_URL cuando no fue seteada a mano: usamos el host
+// real por el que llegó CADA request (el que ve el usuario/reproductor).
+app.use((req, res, next) => {
+  if (!PUBLIC_URL_EXPLICIT) {
+    const detected = `${req.protocol}://${req.get('host')}`.replace(/\/+$/, '');
+    if (detected !== PUBLIC_URL) {
+      PUBLIC_URL = detected;
+      aggregator.setPublicUrl(PUBLIC_URL);
+    }
+  }
+  next();
+});
 
 // Rutas del proxy HLS: el reproductor de Stremio pide el m3u8/segmentos a
 // TRAVÉS de nosotros (mismo IP/headers que negociaron el m3u8 real).
@@ -210,4 +232,3 @@ async function shutdown() {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
-
