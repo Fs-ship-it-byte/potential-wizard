@@ -52,12 +52,12 @@ const GENRE_BY_NAME = GENRES.reduce((m, g) => (m[g.name] = g.id, m), {});
 
 const manifest = {
   id: 'com.bflix.stremio',
-  version: '1.1.0',
+  version: '1.2.0',
   name: 'BFlix',
-  description: 'Addon no oficial que agrega Cinecalidad, GNULA, Poseidon HD, PelisGo y Refugio (contenido en español), con catálogo TMDB.',
+  description: 'Addon no oficial que agrega Cinecalidad, GNULA, Poseidon HD, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Poseidon HD.',
   logo: 'https://i.imgur.com/6Fjnyzl.png',
   resources: ['catalog', 'meta', 'stream'],
-  types: ['movie'],
+  types: ['movie', 'series'],
   catalogs: [
     { type: 'movie', id: 'bflix-popular', name: 'BFlix - Populares', extra: [{ name: 'skip' }] },
     { type: 'movie', id: 'bflix-top', name: 'BFlix - Mejor valoradas', extra: [{ name: 'skip' }] },
@@ -65,7 +65,15 @@ const manifest = {
       type: 'movie', id: 'bflix-genre', name: 'BFlix - Por género',
       extra: [{ name: 'genre', options: GENRES.map((g) => g.name), isRequired: true }, { name: 'skip' }]
     },
-    { type: 'movie', id: 'bflix-search', name: 'BFlix - Buscar', extra: [{ name: 'search', isRequired: true }] }
+    { type: 'movie', id: 'bflix-search', name: 'BFlix - Buscar', extra: [{ name: 'search', isRequired: true }] },
+
+    { type: 'series', id: 'bflix-series-popular', name: 'BFlix - Series populares', extra: [{ name: 'skip' }] },
+    { type: 'series', id: 'bflix-series-top', name: 'BFlix - Series mejor valoradas', extra: [{ name: 'skip' }] },
+    {
+      type: 'series', id: 'bflix-series-genre', name: 'BFlix - Series por género',
+      extra: [{ name: 'genre', options: GENRES.map((g) => g.name), isRequired: true }, { name: 'skip' }]
+    },
+    { type: 'series', id: 'bflix-series-search', name: 'BFlix - Buscar series', extra: [{ name: 'search', isRequired: true }] }
   ],
   idPrefixes: ['tt', 'bflix:']
 };
@@ -74,57 +82,111 @@ const builder = new addonBuilder(manifest);
 
 // ---------- helpers TMDB / IMDb ----------
 
-async function tmdbFind(imdbId) {
+async function tmdbFindMovie(imdbId) {
   const data = await tmdbGet(`/find/${imdbId}`, { external_source: 'imdb_id' });
   return (data.movie_results && data.movie_results[0]) || null;
 }
 
-function tmdbToMeta(m) {
+async function tmdbFindSeries(imdbId) {
+  const data = await tmdbGet(`/find/${imdbId}`, { external_source: 'imdb_id' });
+  return (data.tv_results && data.tv_results[0]) || null;
+}
+
+function tmdbToMeta(m, type) {
   // m.imdb_id ya viene con el prefijo "tt" cuando existe
-  const id = m.imdb_id ? m.imdb_id : 'bflix:' + m.id;
-  return {
+  const id = m.imdb_id ? m.imdb_id : (type === 'series' ? 'bflix:tv:' + m.id : 'bflix:' + m.id);
+  const meta = {
     id,
-    type: 'movie',
+    type,
     name: m.title || m.name,
     poster: m.poster_path ? `https://image.tmdb.org/t/p/w342${m.poster_path}` : undefined,
     background: m.backdrop_path ? `https://image.tmdb.org/t/p/w780${m.backdrop_path}` : undefined,
     description: m.overview,
-    releaseInfo: (m.release_date || '').substring(0, 4),
+    releaseInfo: (m.release_date || m.first_air_date || '').substring(0, 4),
     imdbRating: m.vote_average ? String(Math.round(m.vote_average * 10) / 10) : undefined,
     genres: (m.genres || []).map((g) => g.name)
   };
+  if (type === 'series' && m.videos) meta.videos = m.videos;
+  return meta;
 }
 
-function toCatalogMeta(m) {
+function toCatalogMeta(m, type) {
   return {
-    id: 'bflix:' + m.id, // se resuelve a imdb (si existe) en /meta
-    type: 'movie',
-    name: m.title,
+    id: (type === 'series' ? 'bflix:tv:' : 'bflix:') + m.id, // se resuelve a imdb (si existe) en /meta
+    type,
+    name: m.title || m.name,
     poster: m.poster_path ? `https://image.tmdb.org/t/p/w342${m.poster_path}` : undefined,
-    releaseInfo: (m.release_date || '').substring(0, 4)
+    releaseInfo: (m.release_date || m.first_air_date || '').substring(0, 4)
   };
+}
+
+// Arma meta.videos (uno por episodio) pidiendo cada temporada a TMDB en
+// paralelo. seriesMetaId es el id que Stremio usa para esta serie (tt... o
+// bflix:tv:...) — cada video queda como `${seriesMetaId}:${season}:${episode}`,
+// que es el id que después nos va a llegar en el stream handler.
+async function buildSeriesVideos(tmdbId, seriesMetaId) {
+  const details = await tmdbGet(`/tv/${tmdbId}`, {});
+  const seasonNumbers = (details.seasons || [])
+    .map((s) => s.season_number)
+    .filter((n) => n > 0); // se salta "Especiales" (temporada 0)
+
+  const seasonsData = await Promise.all(
+    seasonNumbers.map((sn) => tmdbGet(`/tv/${tmdbId}/season/${sn}`, {}).catch(() => null))
+  );
+
+  const videos = [];
+  seasonsData.forEach((season, idx) => {
+    if (!season || !season.episodes) return;
+    const sn = seasonNumbers[idx];
+    season.episodes.forEach((ep) => {
+      videos.push({
+        id: `${seriesMetaId}:${sn}:${ep.episode_number}`,
+        title: ep.name || `Episodio ${ep.episode_number}`,
+        season: sn,
+        episode: ep.episode_number,
+        released: ep.air_date ? new Date(ep.air_date).toISOString() : undefined,
+        thumbnail: ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : undefined,
+        overview: ep.overview || undefined
+      });
+    });
+  });
+  return videos;
+}
+
+// Parsea el id que Stremio manda al pedir streams de un episodio:
+// "tt1234567:3:2" o "bflix:tv:94997:3:2" -> { seriesId, season, episode }
+function parseSeriesStreamId(id) {
+  const parts = id.split(':');
+  const episode = parseInt(parts.pop(), 10);
+  const season = parseInt(parts.pop(), 10);
+  const seriesId = parts.join(':');
+  return { seriesId, season, episode };
 }
 
 // ---------- CATALOG ----------
 
-builder.defineCatalogHandler(async ({ id, extra }) => {
+builder.defineCatalogHandler(async ({ type, id, extra }) => {
   try {
     const page = extra && extra.skip ? Math.floor(Number(extra.skip) / 20) + 1 : 1;
+    const isSeries = type === 'series';
+    const base = isSeries ? '/tv' : '/movie';
+    const searchPath = isSeries ? '/search/tv' : '/search/movie';
+    const discoverPath = isSeries ? '/discover/tv' : '/discover/movie';
     let data;
 
-    if (id === 'bflix-search' && extra && extra.search) {
-      data = await tmdbGet('/search/movie', { query: extra.search, page });
-    } else if (id === 'bflix-top') {
-      data = await tmdbGet('/movie/top_rated', { page });
-    } else if (id === 'bflix-genre' && extra && extra.genre) {
+    if ((id === 'bflix-search' || id === 'bflix-series-search') && extra && extra.search) {
+      data = await tmdbGet(searchPath, { query: extra.search, page });
+    } else if (id === 'bflix-top' || id === 'bflix-series-top') {
+      data = await tmdbGet(`${base}/top_rated`, { page });
+    } else if ((id === 'bflix-genre' || id === 'bflix-series-genre') && extra && extra.genre) {
       const genreId = GENRE_BY_NAME[extra.genre];
       if (!genreId) return { metas: [] };
-      data = await tmdbGet('/discover/movie', { with_genres: genreId, sort_by: 'popularity.desc', page });
+      data = await tmdbGet(discoverPath, { with_genres: genreId, sort_by: 'popularity.desc', page });
     } else {
-      data = await tmdbGet('/movie/popular', { page });
+      data = await tmdbGet(`${base}/popular`, { page });
     }
 
-    const metas = (data.results || []).filter((m) => m.poster_path).map(toCatalogMeta);
+    const metas = (data.results || []).filter((m) => m.poster_path).map((m) => toCatalogMeta(m, type));
     return { metas };
   } catch (e) {
     console.error('catalog error', e.message);
@@ -134,26 +196,43 @@ builder.defineCatalogHandler(async ({ id, extra }) => {
 
 // ---------- META ----------
 
-builder.defineMetaHandler(async ({ id }) => {
+builder.defineMetaHandler(async ({ type, id }) => {
   try {
     let m;
-    if (id.startsWith('bflix:')) {
-      const tmdbId = id.split(':')[1];
-      const data = await tmdbGet(`/movie/${tmdbId}`, { append_to_response: 'external_ids' });
+    if (type === 'series') {
+      let tmdbId;
+      if (id.startsWith('bflix:tv:')) {
+        tmdbId = id.split(':')[2];
+      } else if (id.startsWith('tt')) {
+        const found = await tmdbFindSeries(id);
+        if (!found) return { meta: null };
+        tmdbId = found.id;
+      } else {
+        return { meta: null };
+      }
+      const data = await tmdbGet(`/tv/${tmdbId}`, { append_to_response: 'external_ids' });
       m = data;
       m.imdb_id = data.external_ids && data.external_ids.imdb_id;
-    } else if (id.startsWith('tt')) {
-      m = await tmdbFind(id);
-      if (m) {
-        // /find no trae "genres" con nombre completo ni todos los campos; completar con /movie/:id
-        const full = await tmdbGet(`/movie/${m.id}`, {});
-        m = Object.assign(full, { imdb_id: id });
-      }
+      const seriesMetaId = m.imdb_id ? m.imdb_id : 'bflix:tv:' + tmdbId;
+      m.videos = await buildSeriesVideos(tmdbId, seriesMetaId);
     } else {
-      return { meta: null };
+      if (id.startsWith('bflix:')) {
+        const tmdbId = id.split(':')[1];
+        const data = await tmdbGet(`/movie/${tmdbId}`, { append_to_response: 'external_ids' });
+        m = data;
+        m.imdb_id = data.external_ids && data.external_ids.imdb_id;
+      } else if (id.startsWith('tt')) {
+        m = await tmdbFindMovie(id);
+        if (m) {
+          const full = await tmdbGet(`/movie/${m.id}`, {});
+          m = Object.assign(full, { imdb_id: id });
+        }
+      } else {
+        return { meta: null };
+      }
     }
     if (!m) return { meta: null };
-    return { meta: tmdbToMeta(m) };
+    return { meta: tmdbToMeta(m, type) };
   } catch (e) {
     console.error('meta error', e.message);
     return { meta: null };
@@ -163,39 +242,64 @@ builder.defineMetaHandler(async ({ id }) => {
 // ---------- STREAM ----------
 
 builder.defineStreamHandler(async ({ type, id }) => {
-  if (type !== 'movie') return { streams: [] };
   try {
-    let title, year;
-    if (id.startsWith('tt')) {
-      const m = await tmdbFind(id);
-      if (!m) return { streams: [] };
-      title = m.title;
-      year = (m.release_date || '').substring(0, 4);
-    } else if (id.startsWith('bflix:')) {
-      const tmdbId = id.split(':')[1];
-      const data = await tmdbGet(`/movie/${tmdbId}`, {});
-      title = data.title;
-      year = (data.release_date || '').substring(0, 4);
-    } else {
-      return { streams: [] };
+    if (type === 'movie') {
+      let title, year;
+      if (id.startsWith('tt')) {
+        const m = await tmdbFindMovie(id);
+        if (!m) return { streams: [] };
+        title = m.title;
+        year = (m.release_date || '').substring(0, 4);
+      } else if (id.startsWith('bflix:')) {
+        const tmdbId = id.split(':')[1];
+        const data = await tmdbGet(`/movie/${tmdbId}`, {});
+        title = data.title;
+        year = (data.release_date || '').substring(0, 4);
+      } else {
+        return { streams: [] };
+      }
+
+      const results = await aggregator.getStreams(title, year);
+      return { streams: normalizeStreams(results) };
     }
 
-    const results = await aggregator.getStreams(title, year);
-
-    const streams = results.map((r) => {
-      if (r.type === 'torrent' && r.infoHash) {
-        return { name: r.name, title: r.title, infoHash: r.infoHash };
+    if (type === 'series') {
+      const { seriesId, season, episode } = parseSeriesStreamId(id);
+      let title, year;
+      if (seriesId.startsWith('tt')) {
+        const m = await tmdbFindSeries(seriesId);
+        if (!m) return { streams: [] };
+        title = m.name;
+        year = (m.first_air_date || '').substring(0, 4);
+      } else if (seriesId.startsWith('bflix:tv:')) {
+        const tmdbId = seriesId.split(':')[2];
+        const data = await tmdbGet(`/tv/${tmdbId}`, {});
+        title = data.name;
+        year = (data.first_air_date || '').substring(0, 4);
+      } else {
+        return { streams: [] };
       }
-      // embed resuelto o sin resolver: se ofrece como link externo/reproducible
-      return { name: r.name, title: r.title + (r.resolved ? '' : ' (enlace externo)'), url: r.url };
-    }).filter((s) => s.infoHash || s.url);
 
-    return { streams };
+      const results = await aggregator.getEpisodeStreams(title, year, season, episode);
+      return { streams: normalizeStreams(results) };
+    }
+
+    return { streams: [] };
   } catch (e) {
     console.error('stream error', e.message);
     return { streams: [] };
   }
 });
+
+function normalizeStreams(results) {
+  return results.map((r) => {
+    if (r.type === 'torrent' && r.infoHash) {
+      return { name: r.name, title: r.title, infoHash: r.infoHash };
+    }
+    // embed resuelto o sin resolver: se ofrece como link externo/reproducible
+    return { name: r.name, title: r.title + (r.resolved ? '' : ' (enlace externo)'), url: r.url };
+  }).filter((s) => s.infoHash || s.url);
+}
 
 const app = express();
 app.set('trust proxy', true); // Railway está detrás de un proxy; sin esto req.protocol/host quedan mal
