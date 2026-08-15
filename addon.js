@@ -322,6 +322,76 @@ app.use((req, res, next) => {
 app.get('/hlsproxy/playlist/:token/*', (req, res) => hlsproxy.handleHlsPlaylistProxy(PUBLIC_URL, req, res));
 app.get('/hlsproxy/segment/:token/*', hlsproxy.handleHlsSegmentProxy);
 
+// --- DIAGNÓSTICO: probar el resolver de Streamwish/VOE (navegador headless)
+// directo contra una URL de embed, sin pasar por búsqueda ni por Stremio.
+// Uso: /debug/streamwish?url=<link de streamwish.to/e/xxx, hgplaycdn.com/e/xxx, etc>
+app.get('/debug/streamwish', async (req, res) => {
+  const embedUrl = req.query.url;
+  if (!embedUrl) return res.status(400).send('Falta ?url=<embed completa>');
+  res.set('Content-Type', 'text/plain');
+  const SW = require('./lib/resolvers/streamwish');
+  const trace = [];
+  const result = await SW.resolveStreamwishHlsViaBrowser(embedUrl, 25000, trace);
+  res.send(trace.join('\n') + '\n\nResultado final: ' + (result ? JSON.stringify(result) : 'null (cayó a enlace externo)'));
+});
+
+// Mismo diagnóstico pero pasando por TODA la cadena real (vidhide -> unwrap
+// player.php -> rápido -> navegador -> genérico), como en producción.
+// Uso: /debug/resolve?url=<player.php de GNULA/Poseidon o embed directo>
+app.get('/debug/resolve', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).send('Falta ?url=');
+  res.set('Content-Type', 'text/plain');
+  const SW = require('./lib/resolvers/streamwish');
+  try {
+    const result = await SW.resolveToDirectHls(url);
+    res.send('Resultado: ' + (result ? JSON.stringify(result) : 'null (cayó a enlace externo)'));
+  } catch (e) {
+    res.status(500).send('Error: ' + e.message);
+  }
+});
+
+// Prueba de red directa (sin navegador) contra un link YA proxeado, para ver
+// si el origen responde bien y qué status/contenido trae de verdad.
+// Uso: /debug/nettest?url=<tu link completo de /hlsproxy/playlist/TOKEN/master.m3u8>
+app.get('/debug/nettest', async (req, res) => {
+  const proxyUrl = req.query.url;
+  if (!proxyUrl) return res.status(400).send('Falta el parámetro ?url=');
+
+  const m = proxyUrl.match(/\/hlsproxy\/(?:playlist|segment)\/([^/]+)\//);
+  if (!m) return res.status(400).send('Esa URL no es un link de /hlsproxy/...');
+
+  const data = hlsproxy.decodeProxyToken(m[1]);
+  if (!data) return res.status(400).send('No se pudo decodificar el token');
+
+  res.set('Content-Type', 'text/plain');
+  const start = Date.now();
+  try {
+    const upstream = await axios.get(data.url, {
+      headers: data.headers,
+      timeout: 12000,
+      responseType: 'text',
+      transformResponse: [(d) => d],
+      validateStatus: () => true
+    });
+    res.send(
+      'URL: ' + data.url +
+      '\nTiempo: ' + (Date.now() - start) + 'ms' +
+      '\nStatus: ' + upstream.status +
+      '\nHeaders respuesta: ' + JSON.stringify(upstream.headers, null, 2) +
+      '\n\nPrimeros 800 caracteres del body:\n' + String(upstream.data).slice(0, 800)
+    );
+  } catch (e) {
+    res.send(
+      'URL: ' + data.url +
+      '\nTiempo hasta el error: ' + (Date.now() - start) + 'ms' +
+      '\nError code: ' + (e.code || 'N/A') +
+      '\nError message: ' + e.message
+    );
+  }
+});
+// --- FIN DIAGNÓSTICO ---
+
 app.use(getRouter(builder.getInterface()));
 
 app.listen(PORT, () => {
