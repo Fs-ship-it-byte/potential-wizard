@@ -54,7 +54,7 @@ const manifest = {
   id: 'com.bflix.stremio',
   version: '1.2.0',
   name: 'BFlix',
-  description: 'Addon no oficial que agrega Cinecalidad, GNULA, Poseidon HD, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Poseidon HD.',
+  description: 'Addon no oficial que agrega Cinecalidad, GNULA, Poseidon HD, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA, Poseidon HD y Cinecalidad.',
   logo: 'https://i.imgur.com/6Fjnyzl.png',
   resources: ['catalog', 'meta', 'stream'],
   types: ['movie', 'series'],
