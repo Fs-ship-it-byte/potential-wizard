@@ -361,6 +361,26 @@ app.get('/debug/resolve', async (req, res) => {
   }
 });
 
+// Corre TODO el pipeline (búsqueda en cada fuente -> match -> fetch de
+// detalle -> lista de servidores -> resolución) igual que en producción,
+// pero devuelve el JSON crudo para poder ver exactamente en qué paso se
+// cae un título puntual (útil para series donde la falla puede estar en la
+// búsqueda/match, no en el resolver de embeds).
+// Película:  /debug/episode?title=Titulo&year=2024
+// Episodio:  /debug/episode?title=La%20Casa%20del%20Drag%C3%B3n&originalTitle=House%20of%20the%20Dragon&season=3&episode=7
+app.get('/debug/episode', async (req, res) => {
+  const { title, originalTitle, year, season, episode } = req.query;
+  if (!title) return res.status(400).send('Falta ?title=');
+  try {
+    const results = season && episode
+      ? await aggregator.getEpisodeStreams(title, year, Number(season), Number(episode), originalTitle)
+      : await aggregator.getStreams(title, year, originalTitle);
+    res.json({ query: { title, originalTitle, year, season, episode }, count: results.length, results });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
 // Prueba de red directa (sin navegador) contra un link YA proxeado, para ver
 // si el origen responde bien y qué status/contenido trae de verdad.
 // Uso: /debug/nettest?url=<tu link completo de /hlsproxy/playlist/TOKEN/master.m3u8>
