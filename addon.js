@@ -54,7 +54,7 @@ const manifest = {
   id: 'com.bflix.stremio',
   version: '1.2.0',
   name: 'BFlix',
-  description: 'Addon no oficial que agrega Cinecalidad, GNULA, Poseidon HD, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Poseidon HD.',
+  description: 'Addon no oficial que agrega Cinecalidad, GNULA, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Cinecalidad. Solo muestra streams resueltos a link directo.',
   logo: 'https://i.imgur.com/6Fjnyzl.png',
   resources: ['catalog', 'meta', 'stream'],
   types: ['movie', 'series'],
@@ -244,43 +244,47 @@ builder.defineMetaHandler(async ({ type, id }) => {
 builder.defineStreamHandler(async ({ type, id }) => {
   try {
     if (type === 'movie') {
-      let title, year;
+      let title, originalTitle, year;
       if (id.startsWith('tt')) {
         const m = await tmdbFindMovie(id);
         if (!m) return { streams: [] };
         title = m.title;
+        originalTitle = m.original_title;
         year = (m.release_date || '').substring(0, 4);
       } else if (id.startsWith('bflix:')) {
         const tmdbId = id.split(':')[1];
         const data = await tmdbGet(`/movie/${tmdbId}`, {});
         title = data.title;
+        originalTitle = data.original_title;
         year = (data.release_date || '').substring(0, 4);
       } else {
         return { streams: [] };
       }
 
-      const results = await aggregator.getStreams(title, year);
+      const results = await aggregator.getStreams(title, year, originalTitle);
       return { streams: normalizeStreams(results) };
     }
 
     if (type === 'series') {
       const { seriesId, season, episode } = parseSeriesStreamId(id);
-      let title, year;
+      let title, originalTitle, year;
       if (seriesId.startsWith('tt')) {
         const m = await tmdbFindSeries(seriesId);
         if (!m) return { streams: [] };
         title = m.name;
+        originalTitle = m.original_name;
         year = (m.first_air_date || '').substring(0, 4);
       } else if (seriesId.startsWith('bflix:tv:')) {
         const tmdbId = seriesId.split(':')[2];
         const data = await tmdbGet(`/tv/${tmdbId}`, {});
         title = data.name;
+        originalTitle = data.original_name;
         year = (data.first_air_date || '').substring(0, 4);
       } else {
         return { streams: [] };
       }
 
-      const results = await aggregator.getEpisodeStreams(title, year, season, episode);
+      const results = await aggregator.getEpisodeStreams(title, year, season, episode, originalTitle);
       return { streams: normalizeStreams(results) };
     }
 
@@ -291,14 +295,20 @@ builder.defineStreamHandler(async ({ type, id }) => {
   }
 });
 
+// Solo se muestran streams que YA quedaron con link directo: torrents (traen
+// infoHash, Stremio los resuelve solo) y embeds que el resolver logró
+// convertir a .m3u8/.mp4 directo. Los que quedaron sin resolver (enlace
+// externo) se descartan acá -- pedido explícito para no gastar tiempo/carga
+// mostrando algo que de todos modos no reproduce bien dentro de Stremio.
 function normalizeStreams(results) {
-  return results.map((r) => {
-    if (r.type === 'torrent' && r.infoHash) {
-      return { name: r.name, title: r.title, infoHash: r.infoHash };
-    }
-    // embed resuelto o sin resolver: se ofrece como link externo/reproducible
-    return { name: r.name, title: r.title + (r.resolved ? '' : ' (enlace externo)'), url: r.url };
-  }).filter((s) => s.infoHash || s.url);
+  return results
+    .filter((r) => (r.type === 'torrent' && r.infoHash) || r.resolved === true)
+    .map((r) => {
+      if (r.type === 'torrent' && r.infoHash) {
+        return { name: r.name, title: r.title, infoHash: r.infoHash };
+      }
+      return { name: r.name, title: r.title, url: r.url };
+    });
 }
 
 const app = express();
