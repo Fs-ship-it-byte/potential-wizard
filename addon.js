@@ -381,6 +381,49 @@ app.get('/debug/episode', async (req, res) => {
   }
 });
 
+// Diagnóstico fino de la BÚSQUEDA cruda de una fuente puntual, sin pasar por
+// todo el pipeline -- para saber si el problema es "el sitio no tiene nada
+// con ese texto" (0 resultados) o "hay resultados pero el match no le
+// pega" (bestMatch descarta todo). Cubre gnula y cinecalidad (las que
+// tienen fetcher de episodio individual).
+// Uso: /debug/search?source=gnula&title=La%20Casa%20del%20Drag%C3%B3n
+app.get('/debug/search', async (req, res) => {
+  const { source, title, originalTitle } = req.query;
+  if (!source || !title) return res.status(400).send('Uso: ?source=gnula|cinecalidad&title=...&originalTitle=... (opcional)');
+  const GN = require('./lib/sources/gnula');
+  const CC = require('./lib/sources/cinecalidad');
+  const titles = [title, originalTitle].filter(Boolean);
+  try {
+    const out = {};
+    for (const t of titles) {
+      let raw;
+      if (source === 'gnula') raw = await GN.searchGnula(t);
+      else if (source === 'cinecalidad') raw = await CC.searchCinecalidad(t);
+      else return res.status(400).send('source debe ser gnula o cinecalidad');
+      out[t] = raw;
+    }
+    res.json(out);
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
+// Prueba puntual del fetch de un episodio de GNULA ya con la URL armada
+// (salteando la búsqueda), para separar "no encontró la serie" de "encontró
+// la serie pero el fetch del episodio falla".
+// Uso: /debug/gnula-episode?url=https://gnula.life/series/la-casa-del-dragon/seasons/3/episodes/7
+app.get('/debug/gnula-episode', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).send('Falta ?url=');
+  const GN = require('./lib/sources/gnula');
+  try {
+    const data = await GN.fetchGnulaLifeEpisode(url);
+    res.json({ url, data });
+  } catch (e) {
+    res.status(500).json({ error: e.message, stack: e.stack });
+  }
+});
+
 // Prueba de red directa (sin navegador) contra un link YA proxeado, para ver
 // si el origen responde bien y qué status/contenido trae de verdad.
 // Uso: /debug/nettest?url=<tu link completo de /hlsproxy/playlist/TOKEN/master.m3u8>
