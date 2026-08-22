@@ -65,15 +65,13 @@ const manifest = {
       type: 'movie', id: 'bflix-genre', name: 'BFlix - Por género',
       extra: [{ name: 'genre', options: GENRES.map((g) => g.name), isRequired: true }, { name: 'skip' }]
     },
-    { type: 'movie', id: 'bflix-search', name: 'BFlix - Buscar', extra: [{ name: 'search', isRequired: true }] },
 
     { type: 'series', id: 'bflix-series-popular', name: 'BFlix - Series populares', extra: [{ name: 'skip' }] },
     { type: 'series', id: 'bflix-series-top', name: 'BFlix - Series mejor valoradas', extra: [{ name: 'skip' }] },
     {
       type: 'series', id: 'bflix-series-genre', name: 'BFlix - Series por género',
       extra: [{ name: 'genre', options: GENRES.map((g) => g.name), isRequired: true }, { name: 'skip' }]
-    },
-    { type: 'series', id: 'bflix-series-search', name: 'BFlix - Buscar series', extra: [{ name: 'search', isRequired: true }] }
+    }
   ],
   idPrefixes: ['tt', 'bflix:']
 };
