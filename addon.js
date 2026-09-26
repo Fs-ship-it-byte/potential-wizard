@@ -52,7 +52,7 @@ const GENRE_BY_NAME = GENRES.reduce((m, g) => (m[g.name] = g.id, m), {});
 
 const manifest = {
   id: 'com.bflix.stremio',
-  version: '1.2.0',
+  version: '1.3.1',
   name: 'BFlix',
   description: 'Addon no oficial que agrega Cinecalidad, GNULA, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Cinecalidad. Solo muestra streams resueltos a link directo.',
   logo: 'https://i.imgur.com/6Fjnyzl.png',
@@ -305,7 +305,15 @@ function normalizeStreams(results) {
       if (r.type === 'torrent' && r.infoHash) {
         return { name: r.name, title: r.title, infoHash: r.infoHash };
       }
-      return { name: r.name, title: r.title, url: r.url };
+      const out = { name: r.name, title: r.title, url: r.url };
+      // Proxy liviano (ver aggregator.js/hlsproxy.js): los segmentos los pide
+      // el propio reproductor directo al CDN, así que necesita mandar él
+      // mismo el Referer/Origin que negoció la resolución. Sin esto, el CDN
+      // rechazaría esos pedidos.
+      if (r.lightProxy && r.proxyHeaders) {
+        out.behaviorHints = { notWebReady: true, proxyHeaders: { request: r.proxyHeaders } };
+      }
+      return out;
     });
 }
 
