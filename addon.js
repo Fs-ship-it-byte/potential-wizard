@@ -52,7 +52,7 @@ const GENRE_BY_NAME = GENRES.reduce((m, g) => (m[g.name] = g.id, m), {});
 
 const manifest = {
   id: 'com.bflix.stremio',
-  version: '1.4.1',
+  version: '1.4.3',
   name: 'BFlix',
   description: 'Addon no oficial que agrega Cinecalidad, GNULA, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Cinecalidad. Solo muestra streams resueltos a link directo.',
   logo: 'https://i.imgur.com/6Fjnyzl.png',
@@ -468,6 +468,59 @@ app.get('/debug/nettest', async (req, res) => {
       '\nError message: ' + e.message
     );
   }
+});
+// Diagnóstico específico para el caso "quedó cargando": toma una URL YA
+// proxeada en modo liviano (/hlsproxy/playlist/TOKEN/master.m3u8), pide la
+// playlist con los headers guardados (Referer/Origin/UA -- lo único que el
+// reproductor de Stremio manda también), saca el primer segmento real y lo
+// pide TAMBIÉN solo con esos headers, sin nada de cookie/sesión del
+// navegador que lo resolvió. Si el segmento da bien así, el problema no es
+// el CDN -- es otra cosa (el player, notWebReady en ese cliente, etc). Si da
+// 403/redirect a un login/etc, confirma que ese CDN necesita algo que el
+// proxy liviano no le puede dar, y ese stream puntual necesita proxy
+// completo.
+// Uso: /debug/lightcheck?url=<tu link completo de /hlsproxy/playlist/TOKEN/master.m3u8>
+app.get('/debug/lightcheck', async (req, res) => {
+  const proxyUrl = req.query.url;
+  if (!proxyUrl) return res.status(400).send('Falta ?url=<link de /hlsproxy/playlist/...>');
+  const m = proxyUrl.match(/\/hlsproxy\/playlist\/([^/]+)\//);
+  if (!m) return res.status(400).send('Esa URL no es un link de /hlsproxy/playlist/...');
+  const data = hlsproxy.decodeProxyToken(m[1]);
+  if (!data) return res.status(400).send('No se pudo decodificar el token');
+
+  res.set('Content-Type', 'text/plain');
+  const out = [];
+  out.push('Playlist: ' + data.url);
+  out.push('Headers usados (los mismos que le mandamos a Stremio en proxyHeaders): ' + JSON.stringify(data.headers));
+  out.push('');
+  try {
+    const t0 = Date.now();
+    const master = await axios.get(data.url, { headers: data.headers, timeout: 12000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true });
+    out.push(`GET playlist -> ${master.status} (${Date.now() - t0}ms)`);
+    out.push('Primeras líneas:\n' + String(master.data).slice(0, 500));
+    const lines = String(master.data).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    // subplaylist (si el master es multi-bitrate) o directo el primer segmento
+    let target = lines.find((l) => !l.startsWith('#'));
+    if (!target) { out.push('\nNo encontré ninguna línea de contenido en el master.'); return res.send(out.join('\n')); }
+    if (!/^https?:\/\//i.test(target)) {
+      const base = data.url.replace(/\/[^/]*$/, '');
+      target = target.startsWith('/') ? new URL(data.url).origin + target : base + '/' + target;
+    }
+    out.push('\nSiguiente nivel (sub-playlist o segmento): ' + target);
+    const t1 = Date.now();
+    const second = await axios.get(target, { headers: data.headers, timeout: 12000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true });
+    out.push(`GET ese link, SOLO con Referer/Origin/UA (sin ninguna cookie) -> ${second.status} (${Date.now() - t1}ms)`);
+    out.push('content-type: ' + (second.headers['content-type'] || '?'));
+    if (second.status >= 200 && second.status < 300) {
+      out.push('\n=> Responde bien SOLO con esos headers. El proxy liviano debería funcionar para este link puntual.');
+    } else {
+      out.push('\n=> Lo rechaza con solo esos headers. Esto confirma que este CDN necesita algo más (cookie de sesión, IP, etc) y el proxy liviano no alcanza para él -- hay que forzarlo a proxy completo.');
+      out.push('Primeros 300 caracteres de la respuesta:\n' + String(second.data).slice(0, 300));
+    }
+  } catch (e) {
+    out.push('Error: ' + e.message);
+  }
+  res.send(out.join('\n'));
 });
 // --- FIN DIAGNÓSTICO ---
 
