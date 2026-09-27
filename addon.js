@@ -52,7 +52,7 @@ const GENRE_BY_NAME = GENRES.reduce((m, g) => (m[g.name] = g.id, m), {});
 
 const manifest = {
   id: 'com.bflix.stremio',
-  version: '1.4.3',
+  version: '1.4.5',
   name: 'BFlix',
   description: 'Addon no oficial que agrega Cinecalidad, GNULA, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Cinecalidad. Solo muestra streams resueltos a link directo.',
   logo: 'https://i.imgur.com/6Fjnyzl.png',
@@ -495,7 +495,7 @@ app.get('/debug/lightcheck', async (req, res) => {
   out.push('');
   try {
     const t0 = Date.now();
-    const master = await axios.get(data.url, { headers: data.headers, timeout: 12000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true });
+    const master = await axios.get(data.url, { headers: data.headers, timeout: 20000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true });
     out.push(`GET playlist -> ${master.status} (${Date.now() - t0}ms)`);
     out.push('Primeras líneas:\n' + String(master.data).slice(0, 500));
     const lines = String(master.data).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
@@ -508,7 +508,7 @@ app.get('/debug/lightcheck', async (req, res) => {
     }
     out.push('\nSiguiente nivel (sub-playlist o segmento): ' + target);
     const t1 = Date.now();
-    const second = await axios.get(target, { headers: data.headers, timeout: 12000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true });
+    const second = await axios.get(target, { headers: data.headers, timeout: 20000, responseType: 'text', transformResponse: [(d) => d], validateStatus: () => true });
     out.push(`GET ese link, SOLO con Referer/Origin/UA (sin ninguna cookie) -> ${second.status} (${Date.now() - t1}ms)`);
     out.push('content-type: ' + (second.headers['content-type'] || '?'));
     if (second.status >= 200 && second.status < 300) {
@@ -516,6 +516,37 @@ app.get('/debug/lightcheck', async (req, res) => {
     } else {
       out.push('\n=> Lo rechaza con solo esos headers. Esto confirma que este CDN necesita algo más (cookie de sesión, IP, etc) y el proxy liviano no alcanza para él -- hay que forzarlo a proxy completo.');
       out.push('Primeros 300 caracteres de la respuesta:\n' + String(second.data).slice(0, 300));
+      return res.send(out.join('\n'));
+    }
+
+    // HLS suele tener DOS niveles de sub-playlist: el master lista bitrates
+    // (índice a "index-v1-a1.m3u8"), y ESA sub-playlist lista los segmentos
+    // reales (.ts/.woff2). El chequeo anterior solo probaba el primer nivel
+    // -- que respondiera bien ahí NO prueba nada sobre si los segmentos de
+    // video en sí cargan, y es justo lo que hacía falta verificar.
+    const secondIsPlaylist = /^#EXTM3U/.test(String(second.data).trim());
+    if (!secondIsPlaylist) {
+      out.push('\n(Esto ya era un segmento de video, no una sub-playlist -- no hay más niveles que probar.)');
+      return res.send(out.join('\n'));
+    }
+    const segLines = String(second.data).split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+    if (!segLines.length) { out.push('\nEsa sub-playlist no lista ningún segmento.'); return res.send(out.join('\n')); }
+    let segUrl = segLines[0];
+    if (!/^https?:\/\//i.test(segUrl)) {
+      const base2 = target.replace(/\/[^/]*$/, '');
+      segUrl = segUrl.startsWith('/') ? new URL(target).origin + segUrl : base2 + '/' + segUrl;
+    }
+    out.push('\nSegmento real de video (el que reproduce Stremio): ' + segUrl);
+    const t2 = Date.now();
+    const seg = await axios.get(segUrl, {
+      headers: data.headers, timeout: 20000, responseType: 'arraybuffer', validateStatus: () => true,
+    });
+    out.push(`GET ese segmento, SOLO con Referer/Origin/UA -> ${seg.status} (${Date.now() - t2}ms), ${seg.data.length} bytes`);
+    out.push('content-type: ' + (seg.headers['content-type'] || '?'));
+    if (seg.status >= 200 && seg.status < 300 && seg.data.length > 0) {
+      out.push('\n=> El segmento SÍ carga solo con esos headers. El proxy liviano debería andar -- si Stremio igual no reproduce, no es el CDN, hay que mirar el lado del cliente (notWebReady/proxyHeaders según la plataforma de Stremio que estés usando).');
+    } else {
+      out.push('\n=> El segmento se rechaza o llega vacío. Esto SÍ confirma que el proxy liviano no alcanza para este CDN -- hace falta proxy completo para este stream puntual.');
     }
   } catch (e) {
     out.push('Error: ' + e.message);
