@@ -52,7 +52,7 @@ const GENRE_BY_NAME = GENRES.reduce((m, g) => (m[g.name] = g.id, m), {});
 
 const manifest = {
   id: 'com.bflix.stremio',
-  version: '1.4.6',
+  version: '1.5.0',
   name: 'BFlix',
   description: 'Addon no oficial que agrega Cinecalidad, GNULA, PelisGo y Refugio (contenido en español), con catálogo TMDB. Series: GNULA y Cinecalidad. Solo muestra streams resueltos a link directo.',
   logo: 'https://i.imgur.com/6Fjnyzl.png',
